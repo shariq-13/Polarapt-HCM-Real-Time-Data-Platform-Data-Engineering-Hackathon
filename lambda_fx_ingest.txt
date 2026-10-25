@@ -1,0 +1,50 @@
+import os
+import json
+from datetime import datetime
+import boto3
+import urllib.request
+
+s3 = boto3.client('s3')
+
+def lambda_handler(event, context):
+    bucket_name = os.environ['BUCKET_NAME']
+    app_id = os.environ['OPEN_EXCHANGE_APP_ID']
+    
+    url = f"https://openexchangerates.org/api/latest.json?app_id={app_id}&symbols=PKR,SAR,AED,GBP,EUR,INR"
+    
+    status_code = 200
+    try:
+        with urllib.request.urlopen(url) as response:
+            data = json.loads(response.read().decode())
+            record_count = len(data.get('rates', {}))
+    except Exception as e:
+        data = {"error": str(e)}
+        record_count = 0
+        status_code = 500
+
+    now = datetime.utcnow()
+    date_path = now.strftime("raw/fx/%Y/%m/%d/%H%M.json")
+    
+    payload = {
+        "contract": {
+            "timestamp": now.isoformat(),
+            "source": "fx",
+            "record_count": record_count,
+            "response_status": status_code
+        },
+        "data": data
+    }
+    
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=date_path,
+        Body=json.dumps(payload),
+        ContentType='application/json',
+        Metadata={
+            'timestamp': now.isoformat(),
+            'source': 'fx',
+            'record_count': str(record_count),
+            'response_status': str(status_code)
+        }
+    )
+    return {"status": "Success", "records": record_count}

@@ -1,0 +1,112 @@
+import os
+import json
+from datetime import datetime
+import urllib.request
+import urllib.error
+import html.parser
+import boto3
+
+s3 = boto3.client('s3')
+
+class SimpleTableParser(html.parser.HTMLParser):
+    """Lightweight HTML parser to extract table rows and columns without external libraries."""
+    def __init__(self):
+        super().__init__()
+        self.in_table = False
+        self.in_row = False
+        self.in_cell = False
+        self.rows = []
+        self.current_row = []
+        self.current_cell_data = ""
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'table':
+            self.in_table = True
+        elif self.in_table and tag == 'tr':
+            self.in_row = True
+            self.current_row = []
+        elif self.in_row and (tag == 'td' or tag == 'th'):
+            self.in_cell = True
+            self.current_cell_data = ""
+
+    def handle_endtag(self, tag):
+        if tag == 'table':
+            self.in_table = False
+        elif self.in_table and tag == 'tr':
+            if self.in_row and self.current_row:
+                self.rows.append(self.current_row)
+            self.in_row = False
+        elif self.in_row and (tag == 'td' or tag == 'th'):
+            self.in_cell = False
+            self.current_row.append(self.current_cell_data.strip())
+
+    def handle_data(self, data):
+        if self.in_cell:
+            self.current_cell_data += data
+
+def lambda_handler(event, context):
+    bucket_name = os.environ.get('BUCKET_NAME', 'data-hackathon-smit-shariq')
+    url = "https://www.bls.gov/ooh/highest-paying.htm"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    occupations = []
+    status_code = 200
+    
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as response:
+            status_code = response.getcode()
+            html_content = response.read().decode('utf-8')
+            
+            parser = SimpleTableParser()
+            parser.feed(html_content)
+            
+            # Skip header row [0] and take up to top 10 rows
+            table_rows = parser.rows[1:11]
+            for cols in table_rows:
+                if len(cols) >= 2:
+                    occupations.append({
+                        "occupation": cols[0],
+                        "median_pay": cols[1]
+                    })
+                    
+    except urllib.error.HTTPError as e:
+        status_code = e.code
+        occupations = [{"error": f"HTTP Error: {e.code}"}]
+    except Exception as e:
+        status_code = 500
+        occupations = [{"error": str(e)}]
+
+    now = datetime.utcnow()
+    date_path = now.strftime("raw/benchmarks/%Y/%m/%d/%H%M.json")
+    record_count = len(occupations)
+    
+    # Payload structure with metadata contract
+    payload = {
+        "contract": {
+            "timestamp": now.isoformat(),
+            "source": "benchmarks",
+            "record_count": record_count,
+            "response_status": status_code
+        },
+        "data": occupations
+    }
+    
+    # Store object into S3 bucket with metadata
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=date_path,
+        Body=json.dumps(payload),
+        ContentType='application/json',
+        Metadata={
+            'timestamp': now.isoformat(),
+            'source': 'benchmarks',
+            'record_count': str(record_count),
+            'response_status': str(status_code)
+        }
+    )
+    
+    return {"status": "Success", "records": record_count}

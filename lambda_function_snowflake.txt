@@ -1,0 +1,81 @@
+import os
+import json
+import boto3
+import snowflake.connector
+import urllib.parse
+
+s3 = boto3.client('s3')
+
+def lambda_handler(event, context):
+    sf_user = os.environ.get('SF_USER')
+    sf_password = os.environ.get('SF_PASSWORD')
+    sf_account = os.environ.get('SF_ACCOUNT')
+    sf_warehouse = os.environ.get('SF_WAREHOUSE', 'HCM_WH')
+    sf_database = os.environ.get('SF_DATABASE', 'HCM_DB')
+    sf_schema = os.environ.get('SF_SCHEMA', 'RAW_DATA')
+    sf_role = os.environ.get('SF_ROLE', 'SYSADMIN')
+
+    bucket = None
+    key = None
+
+    if 'bucket' in event and 'key' in event:
+        bucket = event['bucket']
+        key = event['key']
+    elif 'Records' in event and len(event['Records']) > 0:
+        rec = event['Records'][0]
+        if 's3' in rec:
+            bucket = rec['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(rec['s3']['object']['key'])
+        elif 'body' in rec:
+            body = json.loads(rec['body'])
+            bucket = body.get('bucket')
+            key = body.get('key')
+
+    if not bucket or not key:
+        raise ValueError(f"Could not extract S3 bucket and key from event payload: {json.dumps(event)}")
+
+    print(f"Fetching file directly from s3://{bucket}/{key}")
+
+    conn = snowflake.connector.connect(
+        user=sf_user,
+        password=sf_password,
+        account=sf_account,
+        warehouse=sf_warehouse,
+        database=sf_database,
+        schema=sf_schema,
+        role=sf_role
+    )
+    cursor = conn.cursor()
+
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        file_content = obj['Body'].read().decode('utf-8')
+        data = json.loads(file_content)
+        
+        # Safely extract records whether the JSON is a raw list or wrapped under 'data'
+        if isinstance(data, list):
+            records = data
+        elif isinstance(data, dict) and 'data' in data:
+            records = data['data']
+        else:
+            records = [data]
+        
+        insert_sql = "INSERT INTO raw_jobs (raw_data) SELECT PARSE_JSON(%s)"
+        
+        # Insert records one by one to avoid executemany rewrite issues
+        inserted_count = 0
+        for item in records:
+            cursor.execute(insert_sql, (json.dumps(item),))
+            inserted_count += 1
+            
+        conn.commit()
+        print(f"Successfully loaded {inserted_count} raw JSON records into Snowflake.")
+
+    except Exception as e:
+        print(f"Error during Snowflake ingestion: {str(e)}")
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
+
+    return {"status": "Raw JSON Ingestion Complete", "bucket": bucket, "key": key, "records_loaded": inserted_count}

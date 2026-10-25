@@ -1,0 +1,59 @@
+import os
+import json
+import boto3
+
+s3 = boto3.client('s3')
+sns = boto3.client('sns')
+
+def lambda_handler(event, context):
+    sns_fifo_topic_arn = os.environ.get('SNS_FIFO_TOPIC_ARN')
+    if not sns_fifo_topic_arn:
+        raise ValueError("Environment variable 'SNS_FIFO_TOPIC_ARN' is not set.")
+
+    for record in event.get('Records', []):
+        bucket_name = record['s3']['bucket']['name']
+        object_key = record['s3']['object']['key']
+        
+        metadata = {}
+        try:
+            # Try fetching real S3 metadata
+            response = s3.head_object(Bucket=bucket_name, Key=object_key)
+            metadata = response.get('Metadata', {})
+            content_length = response.get('ContentLength', 0)
+        except Exception as e:
+            print(f"Warning: Could not fetch S3 object ({str(e)}). Falling back to key-based inference for testing.")
+            content_length = record['s3'].get('object', {}).get('size', 100)
+            
+            # Infer source from key path for console testing
+            if "jobs" in object_key:
+                metadata = {"source": "jobs"}
+            elif "benchmarks" in object_key:
+                metadata = {"source": "benchmarks"}
+            elif "fx" in object_key:
+                metadata = {"source": "fx"}
+            else:
+                metadata = {"source": "unknown"}
+            
+        source = metadata.get('source', 'unknown')
+        
+        message_payload = {
+            "bucket": bucket_name,
+            "key": object_key,
+            "size": content_length,
+            "contract": metadata
+        }
+        
+        sns.publish(
+            TopicArn=sns_fifo_topic_arn,
+            Message=json.dumps(message_payload),
+            MessageGroupId=source,
+            MessageAttributes={
+                'source': {
+                    'DataType': 'String',
+                    'StringValue': source
+                }
+            }
+        )
+        print(f"Successfully routed object '{object_key}' with source '{source}' to SNS FIFO.")
+
+    return {"status": "Routing Complete"}
