@@ -42,8 +42,6 @@
 - [Setup](#setup)
 - [Monitoring & Reliability](#monitoring--reliability)
 - [Roadmap](#roadmap)
-- [License](#license)
-
 ---
 
 ## Overview
