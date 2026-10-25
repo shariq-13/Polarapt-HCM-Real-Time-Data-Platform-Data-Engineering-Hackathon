@@ -24,7 +24,6 @@
   <img src="https://img.shields.io/badge/sources-3-informational?style=flat-square">
   <img src="https://img.shields.io/badge/routing-SNS%20FIFO-informational?style=flat-square">
   <img src="https://img.shields.io/badge/architecture-event--driven-success?style=flat-square">
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square">
 </p>
 
 ---
